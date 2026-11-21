@@ -48,21 +48,30 @@ def check_update(current_version):
         "Accept": "application/vnd.github+json",
         "User-Agent": f"MediaDownloadDesk/{current_version}",
     })
-    try:
-        with build_opener(_NoRedirect()).open(request, timeout=8) as response:
-            payload = response.read(_MAX_RELEASE_BYTES + 1)
-    except HTTPError as error:
-        status = error.code
-        headers = error.headers or {}
-        error.close()
-        if status == 404:
-            return UpdateCheck("unreleased")
-        if status == 429 or (status == 403 and (headers.get("X-RateLimit-Remaining") == "0"
-                                                or headers.get("Retry-After"))):
-            raise UpdateCheckError("GitHub 更新查询过于频繁，请稍后再试。") from None
-        raise UpdateCheckError("暂时无法读取 GitHub 版本信息。") from None
-    except (OSError, HTTPException):
-        raise UpdateCheckError("暂时无法连接 GitHub 检查更新。") from None
+    payload = None
+    for attempt in range(2):
+        try:
+            # Follow redirects so a renamed repository still resolves.
+            with build_opener().open(request, timeout=15) as response:
+                payload = response.read(_MAX_RELEASE_BYTES + 1)
+            break
+        except HTTPError as error:
+            status = error.code
+            headers = error.headers or {}
+            error.close()
+            if status == 404:
+                return UpdateCheck("unreleased")
+            if status == 429 or status == 403:
+                if headers.get("X-RateLimit-Remaining") == "0" or headers.get("Retry-After"):
+                    raise UpdateCheckError("GitHub 更新查询过于频繁，请稍后再试。") from None
+                raise UpdateCheckError(f"GitHub 拒绝了更新查询（HTTP {status}），请稍后再试。") from None
+            raise UpdateCheckError(f"暂时无法读取 GitHub 版本信息（HTTP {status}）。") from None
+        except (OSError, HTTPException):
+            if attempt == 0:
+                continue
+            raise UpdateCheckError("暂时无法连接 GitHub 检查更新。") from None
+    if payload is None:
+        raise UpdateCheckError("暂时无法连接 GitHub 检查更新。")
 
     if len(payload) > _MAX_RELEASE_BYTES:
         raise UpdateCheckError("GitHub 返回的版本信息过大。")
