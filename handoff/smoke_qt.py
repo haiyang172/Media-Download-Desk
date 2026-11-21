@@ -311,14 +311,19 @@ with tempfile.TemporaryDirectory(prefix="amdl-qt-smoke-") as scratch:
     settings_page = window.pages["settings"]
     settings_page.folder.setText(scratch)
     settings_page.category.setText("测试分类")
-    settings_page.output.setCurrentText(audio.OUTPUTS["mp3"])
-    settings_page.mp3_bitrate.setCurrentText("192")
     settings_page.proxy.setText("http://127.0.0.1:7890")
     settings_page.save()
     saved = settings.load()
-    assert (saved["folder"], saved["category"], saved["output"], saved["mp3_bitrate"]) == (
-        scratch, "测试分类", "mp3", 192)
+    assert (saved["folder"], saved["category"]) == (scratch, "测试分类")
     assert saved["ui_mode"] == "qt" and saved["proxy"] == "http://127.0.0.1:7890"
+
+    # Conversion defaults now live on the local page and save immediately.
+    window.show_page("local")
+    local_page = window.pages["local"]
+    local_page.default_output.setCurrentText(audio.OUTPUTS["mp3"])
+    local_page.mp3_bitrate.setCurrentText("192")
+    saved = settings.load()
+    assert (saved["output"], saved["mp3_bitrate"]) == ("mp3", 192)
     import net_proxy
     settings_page.proxy.setText("")
     settings_page.save()

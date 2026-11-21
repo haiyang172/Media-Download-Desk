@@ -5,6 +5,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, ttk
 
+import audio
 from local_convert import formats_for
 
 
@@ -59,6 +60,21 @@ class LocalConverter:
         ttk.Label(options, textvariable=self.path_text, style="MusicStatus.TLabel", width=1).grid(
             row=0, column=2, sticky="ew", padx=(0, 7))
         app.action(options, "同目录", lambda: self._set_folder("")).grid(row=0, column=3)
+
+        defaults = ttk.Frame(card, style="MusicToolbar.TFrame")
+        defaults.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        app.label(defaults, "默认输出", muted=True).grid(row=0, column=0, sticky="w")
+        output_box = ttk.Combobox(defaults, values=list(audio.OUTPUTS.values()),
+                                  textvariable=app.output_label, state="readonly", width=18)
+        output_box.grid(row=0, column=1, padx=(6, 14))
+        app.label(defaults, "MP3 码率", muted=True).grid(row=0, column=2, sticky="w")
+        bitrate_box = ttk.Combobox(defaults, values=audio.MP3_BITRATES,
+                                   textvariable=app.fields["mp3_bitrate"], state="readonly", width=6)
+        bitrate_box.grid(row=0, column=3, padx=(6, 0))
+        app.label(defaults, "下载与本地转码共用的默认输出，修改后立即保存。", muted=True, wrap=320).grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        for box in (output_box, bitrate_box):
+            box.bind("<<ComboboxSelected>>", lambda _event: self.app.save_preferences())
 
         foot = ttk.Frame(page, style="Surface.TFrame")
         foot.grid(row=2, column=0, sticky="ew", pady=(10, 0))

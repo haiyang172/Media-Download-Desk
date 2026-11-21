@@ -205,7 +205,7 @@ class LocalPage(QWidget):
         layout.addWidget(self.table, 1)
 
         options = QHBoxLayout()
-        options.addWidget(QLabel("输出格式"))
+        options.addWidget(QLabel("转码为"))
         self.format_box = QComboBox()
         options.addWidget(self.format_box)
         options.addWidget(QLabel("保存位置"))
@@ -217,6 +217,30 @@ class LocalPage(QWidget):
         self.start_button.clicked.connect(self.start)
         options.addWidget(self.start_button)
         layout.addLayout(options)
+
+        defaults = QHBoxLayout()
+        defaults.addWidget(QLabel("默认输出格式"))
+        preferences = settings.load()
+        self.default_output = QComboBox()
+        self.default_output.addItems(list(audio.OUTPUTS.values()))
+        self.default_output.setCurrentText(
+            audio.OUTPUTS.get(preferences.get("output", "original"), "保留原音轨"))
+        defaults.addWidget(self.default_output)
+        defaults.addWidget(QLabel("MP3 码率"))
+        self.mp3_bitrate = QComboBox()
+        self.mp3_bitrate.addItems([str(value) for value in audio.MP3_BITRATES])
+        self.mp3_bitrate.setCurrentText(
+            str(preferences.get("mp3_bitrate", audio.DEFAULT_MP3_BITRATE)))
+        defaults.addWidget(self.mp3_bitrate)
+        defaults.addStretch(1)
+        self.defaults_note = QLabel("下载与本地转码共用的默认输出，修改后立即保存。")
+        self.defaults_note.setProperty("muted", True)
+        defaults.addWidget(self.defaults_note)
+        layout.addLayout(defaults)
+        self._defaults_ready = False
+        self.default_output.currentTextChanged.connect(self.save_defaults)
+        self.mp3_bitrate.currentTextChanged.connect(self.save_defaults)
+        self._defaults_ready = True
 
         self.status = QLabel("添加音频或视频文件后选择输出格式。")
         self.status.setWordWrap(True)
@@ -266,6 +290,21 @@ class LocalPage(QWidget):
         if folder:
             self.folder = folder
             self.folder_button.setText(folder)
+
+    def save_defaults(self, _text=None):
+        if not self._defaults_ready:
+            return
+        values = dict(settings.load())
+        values["output"] = next((key for key, label in audio.OUTPUTS.items()
+                                 if label == self.default_output.currentText()), "original")
+        try:
+            values["mp3_bitrate"] = int(self.mp3_bitrate.currentText())
+        except ValueError:
+            values["mp3_bitrate"] = audio.DEFAULT_MP3_BITRATE
+        settings.save(values)
+        self.defaults_note.setText("默认输出已保存：" + self.default_output.currentText()
+                                   + (" · " + self.mp3_bitrate.currentText() + " kbps"
+                                      if values["output"] == "mp3" else ""))
 
     def _common_formats(self):
         common = set(LOCAL_FORMATS)
@@ -337,17 +376,6 @@ class SettingsPage(QWidget):
         self.category = QLineEdit(str(self.preferences.get("category", "")))
         category_row.addWidget(self.category, 1)
         form.addLayout(category_row)
-
-        self.output = QComboBox()
-        self.output.addItems(list(audio.OUTPUTS.values()))
-        current_output = audio.OUTPUTS.get(self.preferences.get("output", "original"), "保留原音轨")
-        self.output.setCurrentText(current_output)
-        form.addLayout(self._row("输出格式", self.output))
-
-        self.mp3_bitrate = QComboBox()
-        self.mp3_bitrate.addItems([str(value) for value in audio.MP3_BITRATES])
-        self.mp3_bitrate.setCurrentText(str(self.preferences.get("mp3_bitrate", audio.DEFAULT_MP3_BITRATE)))
-        form.addLayout(self._row("MP3 码率", self.mp3_bitrate))
 
         self.apple_quality = QComboBox()
         self.apple_quality.addItems(list(QUALITY.values()))
@@ -436,12 +464,6 @@ class SettingsPage(QWidget):
         values = dict(settings.load())
         values["folder"] = self.folder.text().strip()
         values["category"] = self.category.text().strip()
-        values["output"] = next((key for key, label in audio.OUTPUTS.items()
-                                 if label == self.output.currentText()), "original")
-        try:
-            values["mp3_bitrate"] = int(self.mp3_bitrate.currentText())
-        except ValueError:
-            values["mp3_bitrate"] = audio.DEFAULT_MP3_BITRATE
         values["quality"] = next((key for key, label in QUALITY.items()
                                   if label == self.apple_quality.currentText()), "AAC")
         for source in ("qq", "netease"):

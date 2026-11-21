@@ -1384,16 +1384,9 @@ class Studio:
         self.label(card, "分类文件夹").grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(card, textvariable=self.fields["category"]).grid(row=1, column=1, sticky="ew", padx=10, pady=(8, 0))
         self.label(card, "可留空", muted=True).grid(row=1, column=2, pady=(8, 0))
-        self.label(card, "输出格式").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        output = ttk.Combobox(card, values=list(audio.OUTPUTS.values()), textvariable=self.output_label,
-                              state="readonly", width=22)
-        output.grid(row=2, column=1, sticky="w", padx=10, pady=(8, 0))
-        self.label(card, "MP3 码率").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        ttk.Combobox(card, values=audio.MP3_BITRATES, textvariable=self.fields["mp3_bitrate"],
-                     width=9, state="readonly").grid(row=3, column=1, sticky="w", padx=10, pady=(8, 0))
-        self.label(card, "有损源转换为 FLAC 后，源音质保持原有水平。", muted=True).grid(
-            row=4, column=0, columnspan=3, sticky="w", pady=(8, 8))
-        self.action(card, "保存设置", self.save_preferences, primary=True).grid(row=5, column=0, sticky="w")
+        self.label(card, "输出格式与 MP3 码率已移到「本地转码」页面，下载与转码共用。", muted=True).grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(8, 8))
+        self.action(card, "保存设置", self.save_preferences, primary=True).grid(row=3, column=0, sticky="w")
 
         appearance = self.card(page, 3)
         appearance.columnconfigure(0, weight=1)

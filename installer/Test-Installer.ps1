@@ -3088,13 +3088,18 @@ qt_window.show_page("settings")
 qt_settings = qt_window.pages["settings"]
 qt_settings.folder.setText(str(profile))
 qt_settings.category.setText("测试分类")
-qt_settings.output.setCurrentText(audio.OUTPUTS["mp3"])
-qt_settings.mp3_bitrate.setCurrentText("192")
 qt_settings.proxy.setText("http://127.0.0.1:7890")
 qt_settings.save()
 qt_saved = settings.load()
-assert (qt_saved["folder"], qt_saved["category"], qt_saved["output"], qt_saved["mp3_bitrate"]) == (
-    str(profile), "测试分类", "mp3", 192)
+assert (qt_saved["folder"], qt_saved["category"]) == (str(profile), "测试分类")
+
+# 转码默认值已移到本地转码页并即时保存。
+qt_window.show_page("local")
+qt_local = qt_window.pages["local"]
+qt_local.default_output.setCurrentText(audio.OUTPUTS["mp3"])
+qt_local.mp3_bitrate.setCurrentText("192")
+qt_saved = settings.load()
+assert (qt_saved["output"], qt_saved["mp3_bitrate"]) == ("mp3", 192)
 assert qt_saved["proxy"] == "http://127.0.0.1:7890"
 import net_proxy
 assert net_proxy.apply({"proxy": "http://127.0.0.1:7890"}) == "http://127.0.0.1:7890"
