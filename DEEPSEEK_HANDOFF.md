@@ -6,8 +6,8 @@
 
 | 项目 | 交接时的值 |
 | --- | --- |
-| 已发布供日常使用 | [v0.3.40](https://github.com/haiyang172/Media-Download-Desk/releases/tag/v0.3.40)（Qt 新界面默认），本地 `installer/dist/0.3.40/MediaDownloadDesk-Setup.exe` |
-| 0.3.40 发布附件 | `MediaDownloadDesk-Setup.exe`，577,479,165 字节，SHA-256 `635442646cbe91c4f0dda0cd7439dac0356e8142d1aa9c2b1cc070eb01d42e10`，完整安装检查通过 |
+| 已发布供日常使用 | [v0.3.41](https://github.com/haiyang172/Media-Download-Desk/releases/tag/v0.3.41)（Qt 新界面默认 + 应用内下载安装更新），本地 `installer/dist/0.3.41/MediaDownloadDesk-Setup.exe` |
+| 0.3.41 发布附件 | `MediaDownloadDesk-Setup.exe`，577,490,688 字节，SHA-256 `596eab0743ce5f7888670395ed2d32e38e499d67bf1472550ebdf61878cbb3fd`，完整安装检查通过 |
 | 已发布源码基线 | `0321f6a5a950aabea3930609d2ec70f5531fedb1`， GitHub 分支 `media-download-desk`（已推进到本轮 0.3.40 提交） |
 | D 盘工作分支 | `handoff/v0.3.39` |
 | 2026-11-19/20 开发轮 | 标签修复、NetEase 修复、Qt 完整迁移（默认界面）、深色模式、窗口记忆、完成通知、歌单追更、曲库去重、个人歌单/收藏夹/资料库 |
