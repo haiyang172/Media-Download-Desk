@@ -33,6 +33,9 @@ class BilibiliPage(QWidget):
         self.favorites_button = QPushButton("我的收藏夹")
         self.favorites_button.clicked.connect(self.show_favorites)
         header.addWidget(self.favorites_button)
+        self.preview_button = QPushButton("下载预览")
+        self.preview_button.clicked.connect(self.preview)
+        header.addWidget(self.preview_button)
         layout.addLayout(header)
 
         bar = QHBoxLayout()
@@ -181,6 +184,18 @@ class BilibiliPage(QWidget):
                 self.messages.append(("error", str(error)))
 
         threading.Thread(target=run, daemon=True).start()
+
+    def preview(self):
+        if self.favorites_view:
+            self.status.setText("请先打开分 P 列表再预览。")
+            return
+        rows = [self.rows[index.row()] for index in self.table.selectionModel().selectedRows()
+                if index.row() in self.rows]
+        if not rows:
+            self.status.setText("请先选择要预览的分 P。")
+            return
+        from qtui.bili_preview import BiliPreviewDialog
+        BiliPreviewDialog(self, self.core, rows).exec()
 
     def enqueue(self, begin):
         if self.favorites_view:

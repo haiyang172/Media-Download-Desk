@@ -65,7 +65,28 @@ class MainWindow(QMainWindow):
         status.addWidget(self.status_label)
 
         self.current = None
+        self.setAcceptDrops(True)
         self.show_page("queue")
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if not paths:
+            return
+        event.acceptProposedAction()
+        local = self.pages.get("local")
+        if local is None:
+            return
+        self.show_page("local")
+        local.add_files(paths)
+        self.status_label.setText(f"已拖入 {len(paths)} 个文件到本地转码")
 
     def show_page(self, key):
         if key not in self.pages:

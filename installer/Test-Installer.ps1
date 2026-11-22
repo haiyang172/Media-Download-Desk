@@ -3143,6 +3143,117 @@ with patch.object(qt_pages.app_update, "download_update",
     qt_settings.poll()
     assert "下载失败测试" in qt_settings.update_status.text()
 
+# Qt 队列操作：详情、筛选与重新排队。
+qt_window.show_page("queue")
+qt_queue = qt_window.pages["queue"]
+qt_queue.refresh()
+assert qt_queue.table.rowCount() >= 1
+qt_queue.table.selectRow(0)
+qt_detail = {}
+def qt_fake_exec(dialog):
+    qt_detail["text"] = dialog.body.toPlainText()
+    return 0
+with patch.object(qt_pages.TaskDetailsDialog, "exec", qt_fake_exec):
+    qt_queue.show_details()
+assert qt_detail.get("text")
+qt_queue.filter_box.setCurrentIndex(1)
+qt_queue.refresh()
+qt_source = qt_queue.filter_box.currentData()
+assert qt_source and all(task.source == qt_source for task in qt_queue.tasks.values())
+qt_queue.filter_box.setCurrentIndex(0)
+qt_queue.refresh()
+qt_queue.export_playlist()
+assert "已保存的文件" in qt_queue.status.text()
+qt_remote = next((row for row, task in qt_queue.tasks.items() if task.source != "local"), None)
+assert qt_remote is not None
+qt_queue.table.selectRow(qt_remote)
+qt_queue.requeue_selected()
+assert "重新排队" in qt_queue.status.text()
+
+# Qt 去重审阅：扫描并删除重复文件。
+from qtui.dedup import DedupReviewDialog
+qt_dup_root = Path(profile) / "dedup"
+qt_dup_root.mkdir(exist_ok=True)
+qt_payload = os.urandom(4096)
+(qt_dup_root / "a.mp3").write_bytes(qt_payload)
+(qt_dup_root / "b.mp3").write_bytes(qt_payload)
+qt_dedup = DedupReviewDialog(qt_window)
+qt_dedup._set_folder(str(qt_dup_root))
+qt_dedup.scan()
+deadline = time.monotonic() + 20
+while qt_dedup.busy and time.monotonic() < deadline:
+    qt_dedup.poll()
+    time.sleep(0.02)
+assert len(qt_dedup.rows) == 2 and "1 个可删除" in qt_dedup.summary.text()
+qt_dedup.remove_marked()
+deadline = time.monotonic() + 20
+while qt_dedup.busy and time.monotonic() < deadline:
+    qt_dedup.poll()
+    time.sleep(0.02)
+qt_dedup.poll()
+qt_remaining = list(qt_dup_root.iterdir())
+assert len(qt_remaining) == 1, qt_remaining
+qt_dedup.close()
+
+# Qt 追更新歌与 B 站下载预览。
+qt_watch = qt_window.pages["qq"]
+qt_window.show_page("qq")
+qt_watch.watch_playlist()
+assert "没有新增" in qt_watch.status.text() or "已加入" in qt_watch.status.text()
+from qtui.bili_preview import BiliPreviewDialog
+qt_preview_row = {"source": "bilibili", "url": "https://www.bilibili.com/video/BV1aa411c7mF?p=1",
+                  "id": "BV1aa411c7mF", "cid": 9001, "title": "预览视频", "audio_title": "预览视频",
+                  "artist": "UP 主", "uploader": "UP 主", "duration": 95, "position": 1, "total": 1,
+                  "batch_key": "bilibili:BV1aa411c7mF", "batch_title": "预览视频"}
+qt_preview = BiliPreviewDialog(qt_window, qt_window.core, [qt_preview_row])
+qt_preview.title.setText("改过的歌名")
+qt_preview.mode.setCurrentText(qt_pages.BILI_FORMATS["flac"])
+qt_preview.confirm(False)
+qt_preview_task = [t for t in qt_window.core.list_tasks()
+                   if t.url == "https://www.bilibili.com/video/BV1aa411c7mF?p=1"]
+assert len(qt_preview_task) == 1 and qt_preview_task[0].audio_title == "改过的歌名"
+assert qt_preview_task[0].options["bili_mode"] == "flac"
+
+# Qt 拖拽文件进入本地转码。
+class QtUrl:
+    def __init__(self, path):
+        self.path = path
+    def isLocalFile(self):
+        return True
+    def toLocalFile(self):
+        return self.path
+class QtMime:
+    def urls(self):
+        return [QtUrl(str(qt_dup_root / qt_remaining[0].name))]
+class QtDrop:
+    def mimeData(self):
+        return QtMime()
+    def acceptProposedAction(self):
+        pass
+qt_local = qt_window.pages["local"]
+qt_before = len(qt_local.files)
+qt_window.dropEvent(QtDrop())
+assert len(qt_local.files) == qt_before + 1
+
+# Qt Apple 资料库专辑展开。
+qt_library_rows = [{"id": "1", "type": "playlist", "title": "资料库歌单", "artist": "",
+                    "album": "", "duration": 0, "url": "", "library_id": "p.1", "expandable": True}]
+qt_tracks_fixture = [{"id": "2", "type": "songs", "title": "歌单曲目", "artist": "歌手",
+                      "album": "专辑", "duration": 60, "url": "https://music.apple.com/au/song/2"}]
+qt_window.core.preferences["session"] = settings.protect_session("y" * 60)
+with patch.object(LibraryClient, "tracks", return_value=(qt_tracks_fixture, None)):
+    qt_lib = AppleLibraryDialog(qt_window, qt_window.core)
+    qt_lib._fill(qt_library_rows)
+    qt_lib.table.selectRow(0)
+    qt_lib.open_collection()
+    deadline = time.monotonic() + 15
+    while qt_lib.busy and time.monotonic() < deadline:
+        qt_lib.poll()
+        time.sleep(0.02)
+    qt_lib.poll()
+    assert len(qt_lib.rows) == 1 and qt_lib.rows[0]["title"] == "歌单曲目"
+    qt_lib.close()
+
 # 启动分发默认 Qt，可切回 Tkinter。
 assert Studio._launch_ui() == "qt"
 settings.save({**settings.load(), "ui_mode": "tkinter"})

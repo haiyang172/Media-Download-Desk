@@ -4,8 +4,9 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import (QAbstractItemView, QDialog, QHBoxLayout, QHeaderView, QLabel,
-                               QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView,
+                               QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
+                               QVBoxLayout)
 
 import settings
 from apple_download import SOURCE, read_links
@@ -51,10 +52,11 @@ class AppleLibraryDialog(QDialog):
         layout.addLayout(row)
 
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(("歌曲", "艺人", "专辑"))
+        self.table.setHorizontalHeaderLabels(("名称", "艺人", "专辑"))
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.verticalHeader().setVisible(False)
+        self.table.doubleClicked.connect(lambda _index: self.open_collection())
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -62,9 +64,20 @@ class AppleLibraryDialog(QDialog):
         layout.addWidget(self.table, 1)
 
         actions = QHBoxLayout()
-        self.load_button = QPushButton("读取歌曲")
+        actions.addWidget(QLabel("读取"))
+        self.kind = QComboBox()
+        self.kind.addItem("歌曲", "song")
+        self.kind.addItem("专辑", "album")
+        self.kind.addItem("歌单", "playlist")
+        self.kind.currentIndexChanged.connect(lambda _index: self.load_songs())
+        actions.addWidget(self.kind)
+        self.load_button = QPushButton("读取列表")
         self.load_button.clicked.connect(self.load_songs)
         actions.addWidget(self.load_button)
+        self.back_button = QPushButton("返回列表")
+        self.back_button.clicked.connect(self.load_songs)
+        self.back_button.setVisible(False)
+        actions.addWidget(self.back_button)
         actions.addStretch(1)
         self.queue_button = QPushButton("加入队列")
         self.queue_button.clicked.connect(self.enqueue)
@@ -144,15 +157,47 @@ class AppleLibraryDialog(QDialog):
             return
         self.busy = True
         self.stop = threading.Event()
-        self.status.setText("正在读取资料库歌曲…")
+        kind = self.kind.currentData()
+        labels = {"song": "歌曲", "album": "专辑", "playlist": "歌单"}
+        self.status.setText(f"正在读取资料库{labels.get(kind, '歌曲')}…")
         self._refresh()
         client = LibraryClient(token, self.region, catalog=self.catalog)
         messages = self.messages
 
         def run():
             try:
-                rows, _next = client.items("song")
-                messages.append(("songs", rows))
+                rows, _next = client.items(kind)
+                messages.append(("songs", (rows, kind)))
+            except LibrarySessionRequired:
+                messages.append(("error", "Apple Music 资料库会话已失效，请重新连接。"))
+            except Exception as error:
+                messages.append(("error", str(error)))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def open_collection(self):
+        """Expand a personal album or playlist into its tracks."""
+        if self.busy:
+            return
+        items = [self.rows[index.row()] for index in self.table.selectionModel().selectedRows()
+                 if index.row() in self.rows]
+        if not items or not items[0].get("expandable"):
+            return
+        token = self._token()
+        if not token:
+            self.status.setText("请先连接资料库。")
+            return
+        collection = items[0]
+        self.busy = True
+        self.status.setText("正在读取曲目…")
+        self._refresh()
+        client = LibraryClient(token, self.region, catalog=self.catalog)
+        messages = self.messages
+
+        def run():
+            try:
+                rows, _next = client.tracks(collection)
+                messages.append(("tracks", (rows, collection.get("title", ""))))
             except LibrarySessionRequired:
                 messages.append(("error", "Apple Music 资料库会话已失效，请重新连接。"))
             except Exception as error:
@@ -185,29 +230,44 @@ class AppleLibraryDialog(QDialog):
         self.web_button.setEnabled(idle)
         self.token_button.setEnabled(idle)
         self.load_button.setEnabled(idle)
+        self.kind.setEnabled(idle)
         self.queue_button.setEnabled(bool(self.rows) and idle)
         self.token.setEnabled(idle)
+        self.back_button.setVisible(bool(getattr(self, "expanded", False)))
 
     def poll(self):
         while self.messages:
             kind, value = self.messages.pop(0)
             if kind == "token":
                 if value and self._store(value):
-                    self.status.setText("资料库已连接。可点「读取歌曲」。")
+                    self.status.setText("资料库已连接。可点「读取列表」。")
                 self.busy = False
             elif kind == "songs":
                 self.busy = False
-                self.rows.clear()
-                self.table.setRowCount(0)
-                for item in value:
-                    row = self.table.rowCount()
-                    self.table.insertRow(row)
-                    self.table.setItem(row, 0, QTableWidgetItem(item.get("title", "")))
-                    self.table.setItem(row, 1, QTableWidgetItem(item.get("artist", "")))
-                    self.table.setItem(row, 2, QTableWidgetItem(item.get("album", "")))
-                    self.rows[row] = item
-                self.status.setText(f"已读取 {len(self.rows)} 首歌曲")
+                rows, source_kind = value
+                self.expanded = False
+                self._fill(rows)
+                labels = {"song": "首歌曲", "album": "张专辑", "playlist": "个歌单"}
+                self.status.setText(f"已读取 {len(self.rows)} {labels.get(source_kind, '项')}"
+                                    + ("，双击专辑或歌单查看曲目。" if source_kind != "song" else ""))
+            elif kind == "tracks":
+                self.busy = False
+                rows, title = value
+                self.expanded = True
+                self._fill(rows)
+                self.status.setText(f"{title} · 共 {len(self.rows)} 首")
             elif kind == "error":
                 self.busy = False
                 self.status.setText(value)
         self._refresh()
+
+    def _fill(self, rows):
+        self.rows.clear()
+        self.table.setRowCount(0)
+        for item in rows:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(item.get("title", "")))
+            self.table.setItem(row, 1, QTableWidgetItem(item.get("artist", "")))
+            self.table.setItem(row, 2, QTableWidgetItem(item.get("album", "")))
+            self.rows[row] = item

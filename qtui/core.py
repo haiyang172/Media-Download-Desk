@@ -51,6 +51,13 @@ class QtApp:
     def list_tasks(self):
         return self.queue_store.list_tasks()
 
+    def task(self, task_id):
+        return self.queue_store.get(task_id)
+
+    def requeue(self, task_ids, options=None):
+        """Re-run tasks with the current download options."""
+        return self.queue_store.requeue(task_ids, options or download_options(self.preferences))
+
     def queue_local(self, paths, output, folder):
         """Enqueue local files for conversion and return the new task ids."""
         rows = []

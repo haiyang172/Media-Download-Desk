@@ -373,6 +373,124 @@ with tempfile.TemporaryDirectory(prefix="amdl-qt-smoke-") as scratch:
     settings.save({**settings.load(), "ui_mode": "qt"})
     assert Studio._launch_ui() == "qt"
 
-    print("Qt shell smoke OK: nav, queue, theme, local conversion, YouTube, QQ, Bilibili, Apple, account, preview, playlists, favorites, Apple login, library and settings passed.")
+    # 队列：任务详情、筛选、导出与重新排队。
+    import qtui.pages as qp
+    window.show_page("queue")
+    qpage = window.pages["queue"]
+    qpage.refresh()
+    assert qpage.table.rowCount() >= 1
+    qpage.table.selectRow(0)
+    captured = {}
+    def fake_exec(dialog):
+        captured["text"] = dialog.body.toPlainText()
+        return 0
+    with patch.object(qp.TaskDetailsDialog, "exec", fake_exec):
+        qpage.show_details()
+    assert captured.get("text"), "task details dialog did not render"
+    qpage.filter_box.setCurrentIndex(1)
+    qpage.refresh()
+    source = qpage.filter_box.currentData()
+    assert source and all(task.source == source for task in qpage.tasks.values())
+    qpage.filter_box.setCurrentIndex(0)
+    qpage.refresh()
+    qpage.export_playlist()
+    assert "已保存的文件" in qpage.status.text()
+    remote_row = next((row for row, task in qpage.tasks.items() if task.source != "local"), None)
+    assert remote_row is not None
+    qpage.table.selectRow(remote_row)
+    qpage.requeue_selected()
+    assert "重新排队" in qpage.status.text()
+
+    # 本地转码页的去重审阅：扫描、标记并删除重复。
+    from qtui.dedup import DedupReviewDialog
+    dup_root = Path(scratch) / "dedup"
+    dup_root.mkdir()
+    payload = os.urandom(4096)
+    (dup_root / "a.mp3").write_bytes(payload)
+    (dup_root / "b.mp3").write_bytes(payload)
+    dedup = DedupReviewDialog(window)
+    dedup._set_folder(str(dup_root))
+    dedup.scan()
+    deadline = time.monotonic() + 20
+    while dedup.busy and time.monotonic() < deadline:
+        dedup.poll()
+        time.sleep(0.02)
+    assert len(dedup.rows) == 2 and "1 个可删除" in dedup.summary.text()
+    dedup.remove_marked()
+    deadline = time.monotonic() + 20
+    while dedup.busy and time.monotonic() < deadline:
+        dedup.poll()
+        time.sleep(0.02)
+    dedup.poll()
+    remaining = [path for path in dup_root.iterdir()]
+    assert len(remaining) == 1, remaining
+    dedup.close()
+
+    # 追更新歌：打开过的歌单再检查时没有新增。
+    watch_page = window.pages["qq"]
+    window.show_page("qq")
+    watch_page.watch_playlist()
+    assert "没有新增" in watch_page.status.text() or "已加入" in watch_page.status.text()
+
+    # B 站下载预览：改名并按所选内容入队。
+    from qtui.bili_preview import BiliPreviewDialog
+    preview_row = {"source": "bilibili", "url": "https://www.bilibili.com/video/BV1aa411c7mF?p=1",
+                   "id": "BV1aa411c7mF", "cid": 9001, "title": "预览视频", "audio_title": "预览视频",
+                   "artist": "UP 主", "uploader": "UP 主", "duration": 95, "position": 1, "total": 1,
+                   "batch_key": "bilibili:BV1aa411c7mF", "batch_title": "预览视频"}
+    preview = BiliPreviewDialog(window, window.core, [preview_row])
+    preview.title.setText("改过的歌名")
+    preview.mode.setCurrentText(qp.BILI_FORMATS["flac"])
+    preview.confirm(False)
+    preview_task = [t for t in window.core.list_tasks()
+                    if t.url == "https://www.bilibili.com/video/BV1aa411c7mF?p=1"]
+    assert len(preview_task) == 1 and preview_task[0].audio_title == "改过的歌名"
+    assert preview_task[0].options["bili_mode"] == "flac"
+
+    # 拖拽文件到窗口会把它们加进本地转码。
+    class _Url:
+        def __init__(self, path):
+            self.path = path
+        def isLocalFile(self):
+            return True
+        def toLocalFile(self):
+            return self.path
+
+    class _Mime:
+        def urls(self):
+            return [_Url(str(dup_root / remaining[0].name))]
+    class _Event:
+        def mimeData(self):
+            return _Mime()
+        def acceptProposedAction(self):
+            pass
+
+    local_page = window.pages["local"]
+    before = len(local_page.files)
+    window.dropEvent(_Event())
+    assert len(local_page.files) == before + 1
+
+    # Apple 资料库：双击专辑/歌单展开曲目。
+    library_rows = [{"id": "1", "type": "playlist", "title": "资料库歌单", "artist": "",
+                     "album": "", "duration": 0, "url": "", "library_id": "p.1", "expandable": True}]
+    tracks_fixture = [{"id": "2", "type": "songs", "title": "歌单曲目", "artist": "歌手",
+                       "album": "专辑", "duration": 60, "url": "https://music.apple.com/au/song/2"}]
+    window.core.preferences["session"] = settings.protect_session("y" * 60)
+    with patch.object(LibraryClient, "tracks", return_value=(tracks_fixture, None)):
+        lib = AppleLibraryDialog(window, window.core)
+        lib._fill(library_rows)
+        lib.table.selectRow(0)
+        lib.open_collection()
+        deadline = time.monotonic() + 15
+        while lib.busy and time.monotonic() < deadline:
+            lib.poll()
+            time.sleep(0.02)
+        lib.poll()
+        assert len(lib.rows) == 1 and lib.rows[0]["title"] == "歌单曲目"
+        lib.close()
+
+    print("Qt shell smoke OK: nav, queue, theme, local conversion, YouTube, QQ, Bilibili, Apple, account, preview, "
+          "playlists, favorites, Apple login, library, settings, queue actions, dedup, watch, bili preview, "
+          "drag and drop and library expansion passed.")
     window.core.close()
     window.close()

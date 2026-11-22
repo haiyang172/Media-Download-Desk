@@ -38,6 +38,9 @@ class MusicPage(QWidget):
         self.playlists_button = QPushButton("我的歌单")
         self.playlists_button.clicked.connect(self.show_playlists)
         header.addWidget(self.playlists_button)
+        self.watch_button = QPushButton("追更新歌")
+        self.watch_button.clicked.connect(self.watch_playlist)
+        header.addWidget(self.watch_button)
         layout.addLayout(header)
 
         bar = QHBoxLayout()
@@ -210,11 +213,58 @@ class MusicPage(QWidget):
         except (OSError, RuntimeError, ValueError) as error:
             self.status.setText(str(error))
 
+    def watch_playlist(self):
+        """Enqueue only the tracks the open playlist gained since it was last seen."""
+        if self.busy:
+            return
+        if self.playlist_view or not self.rows:
+            self.status.setText("追更需要先打开一个具体歌单。")
+            return
+        rows = list(self.rows.values())
+        batch_key = next((row.get("batch_key") for row in rows if row.get("batch_key")), None)
+        if batch_key is None:
+            self.status.setText("当前列表无法追更。")
+            return
+        try:
+            import settings
+            from playlist_watch import PlaylistWatch
+
+            watch = PlaylistWatch(settings.DATA / "playlist-watch.json").load()
+            new_rows, complete = watch.diff(batch_key, rows)
+            if not new_rows:
+                watch.commit(batch_key, complete)
+                self.status.setText("该歌单没有新增曲目。")
+                return
+            count = len(self.core.enqueue(new_rows))
+            watch.commit(batch_key, complete)
+            self.status.setText(f"追更 · 已加入 {count} 首新增曲目。" if count else "新增曲目已在队列中。")
+        except (OSError, RuntimeError, ValueError) as error:
+            self.status.setText(str(error))
+
+    def _watch_snapshot(self):
+        """Record the open playlist so 追更 only adds tracks that appear later."""
+        if self.playlist_view or not self.rows:
+            return
+        rows = list(self.rows.values())
+        batch_key = next((row.get("batch_key") for row in rows if row.get("batch_key")), None)
+        if batch_key is None:
+            return
+        try:
+            import settings
+            from playlist_watch import PlaylistWatch
+
+            watch = PlaylistWatch(settings.DATA / "playlist-watch.json").load()
+            _new_rows, complete = watch.diff(batch_key, rows)
+            watch.commit(batch_key, complete)
+        except (OSError, ValueError):
+            pass
+
     def _refresh(self):
         idle = not self.busy
         tracks = bool(self.rows) and not self.playlist_view
         self.resolve_button.setEnabled(idle)
         self.playlists_button.setEnabled(idle)
+        self.watch_button.setEnabled(tracks and idle)
         self.preview_button.setEnabled(tracks and idle)
         self.queue_button.setEnabled(tracks and idle)
         self.download_button.setEnabled(tracks and idle)
@@ -241,6 +291,7 @@ class MusicPage(QWidget):
                     self.source, value.get("rows", []), collection_url=value.get("url", ""),
                     batch_title=value.get("title", ""), total=value.get("total")))
                 self._fill_tracks(queue_rows)
+                self._watch_snapshot()
                 total = value.get("total")
                 suffix = f" / {total}" if isinstance(total, int) else ""
                 self.status.setText(f"已显示 {len(self.rows)}{suffix} 项")
@@ -270,6 +321,7 @@ class MusicPage(QWidget):
                     self.source, value.get("rows", []), private=True, collection_key=collection_key,
                     batch_title=self.current_playlist.get("title", ""), total=value.get("total")))
                 self._fill_tracks(queue_rows)
+                self._watch_snapshot()
                 self.status.setText(f"已显示 {len(self.rows)} 首")
             elif kind == "error":
                 self.busy = False

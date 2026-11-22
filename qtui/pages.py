@@ -4,9 +4,10 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QProgressBar, QPushButton,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog,
+                               QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMenu,
+                               QProgressBar, QPushButton, QTableWidget, QTableWidgetItem,
+                               QTextEdit, QVBoxLayout, QWidget)
 
 import settings
 import app_update
@@ -63,6 +64,34 @@ class PlaceholderPage(QWidget):
         layout.addWidget(hint)
 
 
+SOURCE_LABELS = {
+    "apple_music": "Apple Music", "bilibili": "B 站", "qq": "QQ 音乐",
+    "netease": "网易云音乐", "youtube": "YouTube", "local": "本地转码",
+}
+
+
+class TaskDetailsDialog(QDialog):
+    def __init__(self, parent, title, text):
+        super().__init__(parent)
+        self.setWindowTitle("下载任务")
+        self.resize(520, 420)
+        layout = QVBoxLayout(self)
+        heading = QLabel(title)
+        heading.setStyleSheet("font-size: 16px; font-weight: bold;")
+        heading.setWordWrap(True)
+        layout.addWidget(heading)
+        self.body = QTextEdit()
+        self.body.setReadOnly(True)
+        self.body.setPlainText(text)
+        layout.addWidget(self.body, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton("关闭")
+        close.clicked.connect(self.close)
+        row.addWidget(close)
+        layout.addLayout(row)
+
+
 class QueuePage(QWidget):
     """Actionable download queue backed by the shared queue controller."""
 
@@ -74,19 +103,40 @@ class QueuePage(QWidget):
         self.summary = QLabel("下载队列")
         toolbar.addWidget(self.summary)
         toolbar.addStretch(1)
+        toolbar.addWidget(QLabel("筛选"))
+        self.filter_box = QComboBox()
+        self.filter_box.addItem("全部", "")
+        self.filter_box.currentIndexChanged.connect(lambda _index: self.refresh())
+        toolbar.addWidget(self.filter_box)
+        layout.addLayout(toolbar)
+
+        actions = QHBoxLayout()
         self.start_button = QPushButton("开始 / 继续")
         self.start_button.clicked.connect(self.start)
-        toolbar.addWidget(self.start_button)
+        actions.addWidget(self.start_button)
         self.cancel_button = QPushButton("取消")
         self.cancel_button.clicked.connect(self.core.cancel)
-        toolbar.addWidget(self.cancel_button)
+        actions.addWidget(self.cancel_button)
         self.remove_button = QPushButton("移除所选")
         self.remove_button.clicked.connect(self.remove_selected)
-        toolbar.addWidget(self.remove_button)
+        actions.addWidget(self.remove_button)
+        self.details_button = QPushButton("任务详情")
+        self.details_button.clicked.connect(self.show_details)
+        actions.addWidget(self.details_button)
+        self.open_button = QPushButton("打开位置")
+        self.open_button.clicked.connect(self.open_location)
+        actions.addWidget(self.open_button)
+        self.export_button = QPushButton("导出 M3U8")
+        self.export_button.clicked.connect(self.export_playlist)
+        actions.addWidget(self.export_button)
+        self.requeue_button = QPushButton("重新排队")
+        self.requeue_button.clicked.connect(self.requeue_selected)
+        actions.addWidget(self.requeue_button)
+        actions.addStretch(1)
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self.refresh)
-        toolbar.addWidget(self.refresh_button)
-        layout.addLayout(toolbar)
+        actions.addWidget(self.refresh_button)
+        layout.addLayout(actions)
 
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(("歌名", "歌手", "批次", "位置", "状态", "文件"))
@@ -94,6 +144,9 @@ class QueuePage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_menu)
+        self.table.doubleClicked.connect(lambda _index: self.show_details())
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         for column in (1, 2, 3, 4, 5):
@@ -109,13 +162,19 @@ class QueuePage(QWidget):
         self.timer.timeout.connect(self.poll)
         self.timer.start()
         self.ids = {}
+        self.tasks = {}
         self.refresh()
 
     def selected_ids(self):
         return [self.ids[row] for row in {index.row() for index in self.table.selectedIndexes()}
                 if row in self.ids]
 
+    def selected_tasks(self):
+        return [self.tasks[row] for row in {index.row() for index in self.table.selectedIndexes()}
+                if row in self.tasks]
+
     def refresh(self):
+        chosen = self.filter_box.currentData() if hasattr(self, "filter_box") else ""
         try:
             tasks = self.core.list_tasks()
         except (OSError, RuntimeError, ValueError) as error:
@@ -124,12 +183,17 @@ class QueuePage(QWidget):
         else:
             pending = sum(task.state in ("pending", "running", "interrupted") for task in tasks)
             self.summary.setText(f"下载队列 · 共 {len(tasks)} 项，其中待处理 {pending} 项")
+        self._sync_filter(tasks)
+        chosen = self.filter_box.currentData() if hasattr(self, "filter_box") else ""
+        shown = [task for task in tasks if not chosen or task.source == chosen]
         self.table.setRowCount(0)
         self.ids = {}
-        for task in sorted(tasks, key=lambda item: item.id):
+        self.tasks = {}
+        for task in sorted(shown, key=lambda item: item.id):
             row = self.table.rowCount()
             self.table.insertRow(row)
             self.ids[row] = task.id
+            self.tasks[row] = task
             position = f"{task.position}/{task.total}" if task.position and task.total else ""
             values = (task.title, task.artist or "", task.batch_title or "", position,
                       TASK_LABELS.get(task.state, task.state), str(len(task.files)))
@@ -138,6 +202,21 @@ class QueuePage(QWidget):
                 if column == 4:
                     item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(row, column, item)
+
+    def _sync_filter(self, tasks):
+        present = sorted({task.source for task in tasks})
+        known = [self.filter_box.itemData(index) for index in range(self.filter_box.count())]
+        if known[1:] == present:
+            return
+        current = self.filter_box.currentData()
+        self.filter_box.blockSignals(True)
+        self.filter_box.clear()
+        self.filter_box.addItem("全部", "")
+        for source in present:
+            self.filter_box.addItem(SOURCE_LABELS.get(source, source), source)
+        index = self.filter_box.findData(current)
+        self.filter_box.setCurrentIndex(max(0, index))
+        self.filter_box.blockSignals(False)
 
     def start(self):
         self.core.start()
@@ -148,6 +227,188 @@ class QueuePage(QWidget):
         if ids:
             self.core.remove(ids)
             self.refresh()
+
+    def show_menu(self, position):
+        from PySide6.QtWidgets import QMenu
+
+        if not self.table.selectedIndexes():
+            index = self.table.indexAt(position)
+            if not index.isValid():
+                return
+            self.table.selectRow(index.row())
+        menu = QMenu(self)
+        menu.addAction("查看任务详情", self.show_details)
+        menu.addAction("打开保存位置", self.open_location)
+        menu.addAction("导出播放列表（M3U8）", self.export_playlist)
+        menu.addSeparator()
+        menu.addAction("重新排队", self.requeue_selected)
+        menu.addAction("移除所选", self.remove_selected)
+        menu.exec(self.table.viewport().mapToGlobal(position))
+
+    def show_details(self):
+        tasks = self.selected_tasks()
+        if not tasks:
+            self.status.setText("请先选择任务。")
+            return
+        task = tasks[0]
+        self.status.setText("正在读取任务详情…")
+        self.detail_task = task
+        self.detail_records = list(task.audio_details or [])
+
+        def run():
+            records = list(task.audio_details or [])
+            if not records and task.files:
+                for value in task.files:
+                    path = Path(value)
+                    if not formats_for(path):
+                        continue
+                    details = audio.audio_details(path)
+                    if details:
+                        records.append({"filename": path.name, "output": details})
+            self.detail_records = records
+            self.detail_ready = True
+
+        if task.audio_details or not task.files:
+            self.detail_ready = True
+            self._open_details()
+            return
+        import threading
+        self.detail_ready = False
+        threading.Thread(target=run, daemon=True).start()
+        self.detail_timer = QTimer(self)
+        self.detail_timer.setSingleShot(True)
+        self.detail_timer.setInterval(200)
+        self.detail_timer.timeout.connect(self._wait_details)
+        self.detail_timer.start()
+
+    def _wait_details(self):
+        if not getattr(self, "detail_ready", False):
+            self.detail_timer.start()
+            return
+        self._open_details()
+
+    def _open_details(self):
+        task = self.detail_task
+        records = getattr(self, "detail_records", [])
+        lines = [TASK_LABELS.get(task.state, task.state)]
+        if task.uploader:
+            lines.append(f"投稿者 · {task.uploader}")
+        if task.source_category:
+            lines.append(f"分区 · {task.source_category}")
+        options = task.options or {}
+        if options:
+            lines.append("来源 · " + SOURCE_LABELS.get(task.source, task.source))
+            if task.source == "apple_music":
+                quality = QUALITY.get(options.get("quality"), "")
+                output = audio.OUTPUTS.get(options.get("output"), "")
+                if quality or output:
+                    lines.append(" · ".join(part for part in (quality, output) if part))
+            elif task.source == "bilibili":
+                lines.append(BILI_FORMATS.get(options.get("bili_mode"), BILI_FORMATS["video"]))
+                converted = options.get("bili_output", "original")
+                if options.get("bili_mode") != "video" and converted != "original":
+                    lines.append("保存格式 · " + audio.OUTPUTS.get(converted, converted))
+                    if converted == "mp3":
+                        lines.append(f"MP3 输出 · {options.get('mp3_bitrate', audio.DEFAULT_MP3_BITRATE)} kbps")
+                if options.get("bili_danmaku"):
+                    lines.append("保存弹幕（ASS）")
+                if options.get("bili_subtitle"):
+                    lines.append("保存字幕（SRT）")
+                if options.get("bili_archive"):
+                    lines.append("保存封面与作品资料")
+            elif task.source == "youtube":
+                lines.append(YOUTUBE_FORMATS.get(options.get("youtube_mode"), YOUTUBE_FORMATS["video"]))
+            elif task.source == "local":
+                lines.append(task.url)
+                lines.append(LOCAL_FORMATS.get(options.get("local_format"), ""))
+            elif task.source in ("qq", "netease"):
+                choices = MUSIC_QUALITIES[task.source]
+                requested = options.get(f"{task.source}_quality", "auto")
+                lines.append("请求音质 · " + choices.get(requested, "默认"))
+                lines.append("保存格式 · " + audio.OUTPUTS.get(options.get("output", "original"), ""))
+                if options.get("output") == "mp3":
+                    lines.append(f"MP3 输出 · {options.get('mp3_bitrate', audio.DEFAULT_MP3_BITRATE)} kbps")
+                if options.get("music_sidecars"):
+                    lines.append("保存封面和歌词")
+            folder = options.get("folder")
+            if folder:
+                from apple_download import task_category
+                lines.append(str(Path(folder) / task_category(task)))
+        if task.error:
+            lines.append("错误 · " + task.error)
+        for record in records:
+            source = audio.describe_audio(record.get("source"))
+            output = audio.describe_audio(record.get("output"))
+            if len(records) > 1:
+                lines.append(record.get("filename", ""))
+            if source and source == output:
+                lines.append(f"源与输出音频 · {source}")
+            else:
+                if source:
+                    lines.append(f"源音频 · {source}")
+                if output:
+                    lines.append(f"输出音频 · {output}")
+        lines.extend(task.files)
+        self.status.setText("")
+        TaskDetailsDialog(self, task.title, "\n".join([line for line in lines if line])).exec()
+
+    def open_location(self):
+        from apple_download import task_category
+
+        tasks = self.selected_tasks()
+        if not tasks:
+            self.status.setText("请先选择任务。")
+            return
+        task = tasks[0]
+        folder = None
+        if task.files:
+            folder = Path(task.files[0]).parent
+        elif task.options and task.options.get("folder"):
+            folder = Path(task.options["folder"]) / task_category(task)
+        if folder is None or not Path(folder).is_dir():
+            self.status.setText("找不到该任务的保存位置。")
+            return
+        try:
+            os.startfile(str(folder))
+        except OSError as error:
+            self.status.setText(f"无法打开位置：{error}")
+
+    def export_playlist(self):
+        from playlist_export import save_m3u8
+
+        tasks = [task for task in self.selected_tasks() if task.files]
+        if not tasks:
+            self.status.setText("所选任务还没有已保存的文件。")
+            return
+        batches = {task.batch_title for task in tasks}
+        batch = next(iter(batches)) if len(batches) == 1 else ""
+        initial = Path(tasks[0].files[0]).parent
+        path, _ = QFileDialog.getSaveFileName(self, "导出播放列表", str(initial / f"{batch or '播放列表'}.m3u8"),
+                                              "M3U8 播放列表 (*.m3u8)")
+        if not path:
+            return
+        try:
+            count = save_m3u8(path, tasks)
+        except (OSError, ValueError) as error:
+            self.status.setText(f"无法导出播放列表：{error}")
+        else:
+            self.status.setText(f"已导出 {count} 首 · {Path(path).name}")
+
+    def requeue_selected(self):
+        tasks = self.selected_tasks()
+        if not tasks:
+            self.status.setText("请先选择任务。")
+            return
+        if any(task.source == "local" for task in tasks):
+            self.status.setText("本地转码任务不能按当前设置重新排队。")
+            return
+        try:
+            self.core.requeue([task.id for task in tasks])
+        except (OSError, RuntimeError, ValueError) as error:
+            self.status.setText(f"无法重新排队：{error}")
+        else:
+            self.status.setText(f"已按当前设置重新排队 {len(tasks)} 项")
+        self.refresh()
 
     def poll(self):
         while True:
@@ -193,6 +454,9 @@ class LocalPage(QWidget):
         self.remove_button = QPushButton("移除所选")
         self.remove_button.clicked.connect(self.remove_selected)
         toolbar.addWidget(self.remove_button)
+        self.dedup_button = QPushButton("去重审阅")
+        self.dedup_button.clicked.connect(self.open_dedup)
+        toolbar.addWidget(self.dedup_button)
         layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, 2)
@@ -257,6 +521,11 @@ class LocalPage(QWidget):
     def open_tag_editor(self):
         from qtui.tag_editor import TagEditorDialog
         dialog = TagEditorDialog(self)
+        dialog.exec()
+
+    def open_dedup(self):
+        from qtui.dedup import DedupReviewDialog
+        dialog = DedupReviewDialog(self)
         dialog.exec()
 
     def add_files(self, paths):
@@ -426,6 +695,18 @@ class SettingsPage(QWidget):
         self.proxy.setPlaceholderText("例如 http://127.0.0.1:7890（留空则直连）")
         form.addLayout(self._row("网络代理", self.proxy))
 
+        extras = QHBoxLayout()
+        self.danmaku_box = QCheckBox("B 站弹幕（ASS）")
+        self.subtitle_box = QCheckBox("B 站字幕（SRT）")
+        self.archive_box = QCheckBox("B 站封面与资料")
+        self.sidecar_box = QCheckBox("音乐封面歌词")
+        for box, key in ((self.danmaku_box, "bili_danmaku"), (self.subtitle_box, "bili_subtitle"),
+                         (self.archive_box, "bili_archive"), (self.sidecar_box, "music_sidecars")):
+            box.setChecked(bool(self.preferences.get(key, False)))
+            extras.addWidget(box)
+        extras.addStretch(1)
+        form.addLayout(extras)
+
         diag_row = QHBoxLayout()
         self.diag_button = QPushButton("测试网络")
         self.diag_button.clicked.connect(self.test_network)
@@ -507,6 +788,10 @@ class SettingsPage(QWidget):
         values["ui_mode"] = next((key for key, label in UI_MODES.items()
                                   if label == self.ui_mode.currentText()), "qt")
         values["proxy"] = self.proxy.text().strip()
+        values["bili_danmaku"] = self.danmaku_box.isChecked()
+        values["bili_subtitle"] = self.subtitle_box.isChecked()
+        values["bili_archive"] = self.archive_box.isChecked()
+        values["music_sidecars"] = self.sidecar_box.isChecked()
         settings.save(values)
         import net_proxy
         net_proxy.apply(values)
