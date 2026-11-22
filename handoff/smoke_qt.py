@@ -330,6 +330,30 @@ with tempfile.TemporaryDirectory(prefix="amdl-qt-smoke-") as scratch:
     assert net_proxy.apply(settings.load()) == ""
     assert "HTTPS_PROXY" not in os.environ
 
+    # Update check exposes the release asset and reports download failures.
+    from qtui import pages as qt_pages_module
+    with patch.object(qt_pages_module.app_update, "check_update",
+                      return_value=qt_pages_module.app_update.UpdateCheck(
+                          "available", "9.9.9", "https://example.invalid/tag",
+                          "https://example.invalid/setup.exe", 10, "0" * 64)):
+        settings_page.check_updates()
+        deadline = time.monotonic() + 15
+        while not settings_page.update_events and time.monotonic() < deadline:
+            settings_page.poll()
+            time.sleep(0.02)
+        settings_page.poll()
+        assert "发现新版本" in settings_page.update_status.text()
+        assert not settings_page.update_install.isHidden()
+    with patch.object(qt_pages_module.app_update, "download_update",
+                      side_effect=qt_pages_module.app_update.UpdateCheckError("下载失败测试")):
+        settings_page.install_update()
+        deadline = time.monotonic() + 15
+        while not settings_page.update_events and time.monotonic() < deadline:
+            settings_page.poll()
+            time.sleep(0.02)
+        settings_page.poll()
+        assert "下载失败测试" in settings_page.update_status.text()
+
     # 设置页的网络诊断显示出口信息。
     import qtui.pages as qt_pages
     with patch.object(qt_pages, "egress_text", return_value="出口 1.2.3.4 · 中国 深圳 · 电信"):

@@ -5,10 +5,11 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFrame, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QHeaderView, QLabel, QLineEdit, QProgressBar, QPushButton,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 import settings
+import app_update
 import audio
 from local_convert import formats_for
 
@@ -344,6 +345,13 @@ def egress_text():
             f"{data.get('isp', '')}")
 
 
+def _app_version():
+    try:
+        return (Path(__file__).resolve().parents[1] / "app-version.txt").read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return ""
+
+
 class SettingsPage(QWidget):
     def __init__(self, app, dark):
         super().__init__()
@@ -427,6 +435,28 @@ class SettingsPage(QWidget):
         self.diag.setProperty("muted", True)
         diag_row.addWidget(self.diag, 1)
         form.addLayout(diag_row)
+
+        update_row = QHBoxLayout()
+        self.update_button = QPushButton("检查更新")
+        self.update_button.clicked.connect(self.check_updates)
+        update_row.addWidget(self.update_button)
+        self.update_status = QLabel("")
+        self.update_status.setWordWrap(True)
+        self.update_status.setProperty("muted", True)
+        update_row.addWidget(self.update_status, 1)
+        form.addLayout(update_row)
+        self.update_install = QPushButton("下载并安装")
+        self.update_install.clicked.connect(self.install_update)
+        self.update_install.setVisible(False)
+        form.addWidget(self.update_install)
+        self.update_progress = QProgressBar()
+        self.update_progress.setVisible(False)
+        form.addWidget(self.update_progress)
+        self.update_events = []
+        self.update_result = None
+        self.update_busy = False
+        self.version = _app_version()
+
         self.messages = []
         self.timer = QTimer(self)
         self.timer.setInterval(150)
@@ -482,6 +512,110 @@ class SettingsPage(QWidget):
         net_proxy.apply(values)
         self.status_message = "设置已保存"
 
+    def check_updates(self):
+        import threading
+
+        if self.update_busy or not self.version:
+            return
+        self.update_button.setEnabled(False)
+        self.update_install.setVisible(False)
+        self.update_status.setText(f"版本 {self.version} · 正在检查更新…")
+        events, version = self.update_events, self.version
+
+        def run():
+            try:
+                result = app_update.check_update(version)
+            except app_update.UpdateCheckError as error:
+                events.append(("update_error", str(error)))
+            else:
+                events.append(("update_result", result))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def install_update(self):
+        import tempfile
+        import threading
+
+        result = self.update_result
+        if self.update_busy or result is None or not result.asset_url:
+            return
+        self.update_busy = True
+        self.update_install.setEnabled(False)
+        self.update_button.setEnabled(False)
+        self.update_progress.setVisible(True)
+        self.update_progress.setRange(0, 0)
+        self.update_status.setText(f"版本 {self.version} · 正在下载 {result.version}…")
+        target = Path(tempfile.gettempdir()) / f"MediaDownloadDesk-Setup-{result.version}.exe"
+        events = self.update_events
+
+        def progress(received, total):
+            events.append(("update_progress", (received, total)))
+
+        def run():
+            try:
+                path = app_update.download_update(
+                    result.asset_url, target, expected_size=result.asset_size,
+                    expected_digest=result.asset_digest, on_progress=progress)
+            except app_update.UpdateCheckError as error:
+                events.append(("update_failed", str(error)))
+            else:
+                events.append(("update_done", path))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _handle_update_events(self):
+        from PySide6.QtWidgets import QApplication
+        import os
+
+        while self.update_events:
+            kind, value = self.update_events.pop(0)
+            if kind == "update_error":
+                self.update_button.setEnabled(True)
+                self.update_status.setText(f"版本 {self.version} · {value}")
+            elif kind == "update_result":
+                self.update_button.setEnabled(True)
+                self.update_result = value
+                if value.status == "available":
+                    self.update_status.setText(f"版本 {self.version} · 发现新版本 {value.version}")
+                    self.update_install.setVisible(bool(value.asset_url))
+                    self.update_install.setEnabled(True)
+                else:
+                    self.update_install.setVisible(False)
+                    self.update_status.setText(
+                        f"版本 {self.version} · " + ("已是最新版本" if value.status == "current"
+                                                     else "GitHub 暂无正式发行版"))
+            elif kind == "update_progress":
+                received, total = value
+                if total:
+                    self.update_progress.setRange(0, 100)
+                    self.update_progress.setValue(min(100, received * 100 // total))
+                    self.update_status.setText(
+                        f"版本 {self.version} · 正在下载更新 {received * 100 // total}%"
+                        f"（{received // 1048576}/{total // 1048576} MB）")
+                else:
+                    self.update_status.setText(
+                        f"版本 {self.version} · 正在下载更新 {received // 1048576} MB")
+            elif kind == "update_failed":
+                self.update_busy = False
+                self.update_progress.setVisible(False)
+                self.update_install.setEnabled(True)
+                self.update_button.setEnabled(True)
+                self.update_status.setText(f"版本 {self.version} · {value}")
+            elif kind == "update_done":
+                self.update_busy = False
+                self.update_status.setText(f"版本 {self.version} · 正在启动安装程序…")
+                try:
+                    os.startfile(str(value))
+                except OSError as error:
+                    self.update_progress.setVisible(False)
+                    self.update_install.setEnabled(True)
+                    self.update_button.setEnabled(True)
+                    self.update_status.setText(f"版本 {self.version} · 无法启动安装程序：{error}")
+                    continue
+                application = QApplication.instance()
+                if application is not None:
+                    application.quit()
+
     def test_network(self):
         import threading
 
@@ -505,6 +639,7 @@ class SettingsPage(QWidget):
         while self.messages:
             self.diag.setText(self.messages.pop(0))
             self.diag_button.setEnabled(True)
+        self._handle_update_events()
 
     def _theme_text(self):
         self.theme_button.setText("深色模式" if not self.dark else "浅色模式")

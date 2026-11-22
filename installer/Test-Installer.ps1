@@ -3120,6 +3120,29 @@ with patch.object(qt_pages, "egress_text", return_value="出口 1.2.3.4 · 中�
     qt_settings.poll()
     assert "1.2.3.4" in qt_settings.diag.text()
 
+# 更新检查暴露安装包地址，下载失败会提示。
+with patch.object(qt_pages.app_update, "check_update",
+                  return_value=qt_pages.app_update.UpdateCheck(
+                      "available", "9.9.9", "https://example.invalid/tag",
+                      "https://example.invalid/setup.exe", 10, "0" * 64)):
+    qt_settings.check_updates()
+    deadline = time.monotonic() + 15
+    while not qt_settings.update_events and time.monotonic() < deadline:
+        qt_settings.poll()
+        time.sleep(0.02)
+    qt_settings.poll()
+    assert "发现新版本" in qt_settings.update_status.text()
+    assert not qt_settings.update_install.isHidden()
+with patch.object(qt_pages.app_update, "download_update",
+                  side_effect=qt_pages.app_update.UpdateCheckError("下载失败测试")):
+    qt_settings.install_update()
+    deadline = time.monotonic() + 15
+    while not qt_settings.update_events and time.monotonic() < deadline:
+        qt_settings.poll()
+        time.sleep(0.02)
+    qt_settings.poll()
+    assert "下载失败测试" in qt_settings.update_status.text()
+
 # 启动分发默认 Qt，可切回 Tkinter。
 assert Studio._launch_ui() == "qt"
 settings.save({**settings.load(), "ui_mode": "tkinter"})

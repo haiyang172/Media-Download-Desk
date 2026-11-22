@@ -219,6 +219,9 @@ class Studio:
         self.pending_region = None
         self.verification = None
         self.update_in_progress = False
+        self.update_busy = False
+        self.update_check = None
+        self.update_stop = None
         self.update_release = None
         try:
             self.preferences = settings.load()
@@ -1431,6 +1434,9 @@ class Studio:
         self.release_button = self.action(updates, "查看新版", self.open_update)
         self.release_button.grid(row=0, column=2, padx=(7, 0))
         self.release_button.grid_remove()
+        self.update_install_button = self.action(updates, "下载并安装", self.install_update, primary=True)
+        self.update_install_button.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.update_install_button.grid_remove()
 
     def check_updates(self):
         if self.update_timer:
@@ -1461,12 +1467,17 @@ class Studio:
             message = error
         elif result.status == "available":
             self.update_release = result.url
+            self.update_check = result
             self.release_button.grid()
+            if result.asset_url:
+                self.update_install_button.grid()
             self.navigation["settings"].configure(text="设置 · 有更新")
             message = f"可查看新版 {result.version}"
         else:
             self.update_release = None
+            self.update_check = None
             self.release_button.grid_remove()
+            self.update_install_button.grid_remove()
             self.navigation["settings"].configure(text=PAGES["settings"])
             message = "已是最新版本" if result.status == "current" else "GitHub 暂无正式发行版"
         self.update_status.set(f"版本 {APP_VERSION} · {message}")
@@ -1474,6 +1485,61 @@ class Studio:
     def open_update(self):
         if self.update_release:
             webbrowser.open(self.update_release)
+
+    def install_update(self):
+        """Download the release installer and start it, then close this window."""
+        result = getattr(self, "update_check", None)
+        if self.closing or self.update_busy or result is None or not result.asset_url:
+            return
+        self.update_busy = True
+        self.update_stop = threading.Event()
+        self.update_install_button.state(("disabled",))
+        self.update_button.state(("disabled",))
+        self.update_status.set(f"版本 {APP_VERSION} · 正在下载 {result.version}…")
+        target = Path(tempfile.gettempdir()) / f"MediaDownloadDesk-Setup-{result.version}.exe"
+        stop, post, size = self.update_stop, self.post, result.asset_size
+        digest = result.asset_digest
+
+        def run():
+            try:
+                path = app_update.download_update(
+                    result.asset_url, target, expected_size=size, expected_digest=digest, stop=stop,
+                    on_progress=lambda received, total: post("update_progress", (received, total)))
+            except app_update.Cancelled:
+                post("update_result_done", (None, "已取消下载更新。"))
+            except app_update.UpdateCheckError as error:
+                post("update_result_done", (None, str(error)))
+            else:
+                post("update_result_done", (path, ""))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def receive_update_progress(self, received, total):
+        if self.closing:
+            return
+        if total:
+            self.update_status.set(f"版本 {APP_VERSION} · 正在下载更新 "
+                                   f"{received * 100 // total}%（{received // 1048576}/{total // 1048576} MB）")
+        else:
+            self.update_status.set(f"版本 {APP_VERSION} · 正在下载更新 {received // 1048576} MB")
+
+    def receive_update_done(self, path, error):
+        self.update_busy = False
+        if self.closing:
+            return
+        self.update_button.state(("!disabled",))
+        if error or path is None:
+            self.update_install_button.state(("!disabled",))
+            self.update_status.set(f"版本 {APP_VERSION} · {error or '更新未完成'}")
+            return
+        self.update_status.set(f"版本 {APP_VERSION} · 正在启动安装程序…")
+        try:
+            os.startfile(str(path))
+        except OSError as failure:
+            self.update_install_button.state(("!disabled",))
+            self.update_status.set(f"版本 {APP_VERSION} · 无法启动安装程序：{failure}")
+            return
+        self.window.after(600, self.finish_close)
 
     def make_components(self):
         page = self.pages["components"]
@@ -2327,6 +2393,10 @@ class Studio:
                 self.network_status.set(str(value))
             elif kind == "update_result":
                 self.receive_update(*value)
+            elif kind == "update_progress":
+                self.receive_update_progress(*value)
+            elif kind == "update_result_done":
+                self.receive_update_done(*value)
             elif kind == "web_login_done":
                 self.web_login_busy = False
                 if self.finish_close():
